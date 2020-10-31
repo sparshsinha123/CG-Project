@@ -3,86 +3,129 @@
 
 using namespace std;
 
-#define WINDOW_HEIGHT 400
-#define WINDOW_WIDTH 400
+#define WINDOW_HEIGHT 800
+#define WINDOW_WIDTH 800
 #define PI acos(-1)
 
 std::chrono::steady_clock::time_point t; // keeps track of the current time
 
-
 /*  velocities , masses , locations of the particles */
-double vx1 = 200, vy1 = 500, vx2 = -500, vy2 = 500;
-double cx1 = 180, cy1 = 100, cx2 = 350, cy2 = 350;
-double radius1 = 40, radius2 = 40;
-double m1 = 300, m2 = 300;
+vector<double> vx;
+vector<double> vy;
+vector<double> vz;
 
-/*whether to delay the start or not*/ 
+vector<double> cx;
+vector<double> cy;
+vector<double> cz;
+
+vector<double> radius;
+vector<double> masses;
+
 bool delayedStart = true;
+static int numObjects;
+int cr = 1, cg = 0 , cb = 0;
 
-void reCalculateVelocities(){
+/* recalculate the velocities of ith and jth particle once they have collided*/
+void reCalculateVelocities(int i , int j){
   // apply the principle of conservation of momentum and energy to calculate the final velcocities
-  double vx1_final , vy1_final , vx2_final , vy2_final;
+  double vxi_final , vyi_final , vxj_final , vyj_final;
   
-  double dist = radius1 + radius2;
-  double normal_x = (cx2 - cx1) / dist; 
-  double normal_y = (cy2 - cy1) / dist;
-  assert (normal_x * normal_x + normal_y * normal_y <= 1);
+  double dist = radius[i] + radius[j];
+  double normal_x = (cx[j] - cx[i]) / dist; 
+  double normal_y = (cy[j] - cy[i]) / dist;
+  // assert (normal_x * normal_x + normal_y * normal_y <= 1);
 
-  double vrel_x = ((vx2 - vx1) * normal_x + (vy2 - vy1) * normal_y) * normal_x;
-  double vrel_y = ((vx2 - vx1) * normal_x + (vy2 - vy1) * normal_y) * normal_y;
+  double vrel_x = ((vx[j] - vx[i]) * normal_x + (vy[j] - vy[i]) * normal_y) * normal_x;
+  double vrel_y = ((vx[j] - vx[i]) * normal_x + (vy[j] - vy[i]) * normal_y) * normal_y;
 
-  vx1_final = vx1 + (2.0 * m2 / (m1 + m2)) * vrel_x;
-  vy1_final = vy1 + (2.0 * m2 / (m1 + m2)) * vrel_y;
-  vx2_final = vx2 - (2.0 * m1 / (m1 + m2)) * vrel_x;
-  vy2_final = vy2 - (2.0 * m1 / (m1 + m2)) * vrel_y;
-  
+  vxi_final = vx[i] + (2.0 * masses[j] / (masses[i] + masses[j])) * vrel_x;
+  vyi_final = vy[i] + (2.0 * masses[j] / (masses[i] + masses[j])) * vrel_y;
+  vxj_final = vx[j] - (2.0 * masses[i] / (masses[i] + masses[j])) * vrel_x;
+  vyj_final = vy[j] - (2.0 * masses[i] / (masses[i] + masses[j])) * vrel_y;
 
-  vx1 = vx1_final , vx2 = vx2_final;
-  vy1 = vy1_final , vy2 = vy2_final;
-  cout << vx1 << " , " << vy1 << " , " << vx2 << " , " << vy2 << endl;
+  vx[i] = vxi_final , vx[j] = vxj_final;
+  vy[i] = vyi_final , vy[j] = vyj_final;
 }
 
-bool checkCollision(){
-  double dist = sqrt ( (cx2 - cx1) * (cx2 - cx1) + (cy2 - cy1) * (cy2 - cy1));
-  double minClosestDistance = radius1 + radius2;
-  if (cx1 - radius1 <= 0) vx1 = abs(vx1); // particle has gone to the left
-  if (cx1 + radius1 >= WINDOW_WIDTH) vx1 = -abs(vx1); // particle has gone to the right
-  if (cx2 - radius2 <= 0) vx2 = abs(vx2); // particle has gone to the left
-  if (cx2 + radius2 >= WINDOW_WIDTH) vx2 = -abs(vx2); // particle has gone to the right
+/* return the simple spring force between two particles at any time*/
+double springForce(int i , int j){
+   // returns simple attractive forces between two particles
+   double unDeformedSpringLen = 50;
+   double thresholdDistance = 1000;
+   double distance = sqrt((cx[i] - cx[j]) * (cx[i] - cx[j]) + (cy[i] - cy[j])* (cy[i] - cy[j]));
+   if (distance >= thresholdDistance) return 0;
+   else{
+     if (distance == 0) return 0;
+     double f = 1.34 * 1e-2 * (distance - unDeformedSpringLen);
+     return f;
+   }
+}
 
-  if (cy1 - radius1 <= 0) vy1 = abs(vy1);
-  if (cy1 + radius1 >= WINDOW_HEIGHT) vy1 = -abs(vy1);  
-  if (cy2 - radius2 <= 0) vy2 = abs(vy2);
-  if (cy2 + radius2 >= WINDOW_HEIGHT) vy2 = -abs(vy2);
-  
-  if (dist <= minClosestDistance) {
-    cout << "collided and degree = " << minClosestDistance - dist << endl;
+/* check collision between the ith and the jth particle*/
+bool checkCollision(int i , int j){
+  double dist = sqrt ( (cx[j] - cx[i]) * (cx[j] - cx[i]) + (cy[j] - cy[i]) * (cy[j] - cy[i]));
+  double minClosestDistance = radius[i] + radius[j];
+  if (cx[i] - radius[i] <= 0) vx[i] = abs(vx[i]); // particle has gone to the left
+  if (cx[i] + radius[i] >= WINDOW_WIDTH) vx[i] = -abs(vx[i]); // particle has gone to the right
+ 
+  if (cx[j] - radius[j] <= 0) vx[j] = abs(vx[j]); // particle has gone to the left
+  if (cx[j] + radius[j] >= WINDOW_WIDTH) vx[j] = -abs(vx[j]); // particle has gone to the right
+
+  if (cy[i] - radius[i] <= 0) vy[i] = abs(vy[i]);
+  if (cy[i] + radius[i] >= WINDOW_HEIGHT) vy[i] = -abs(vy[i]);  
+  if (cy[j] - radius[j] <= 0) vy[j] = abs(vy[j]);
+  if (cy[j] + radius[j] >= WINDOW_HEIGHT) vy[j] = -abs(vy[j]); 
+ 
+  double normal_x = (cx[j] - cx[i]) / dist;
+  double normal_y = (cy[j] - cy[i]) / dist;
+
+  double signOfVelocityOfSeparation = (vx[i] * normal_x + vy[i] * normal_y) - (vx[j] * normal_x + vy[j] * normal_y);
+  if (dist <= minClosestDistance && signOfVelocityOfSeparation > 0) {
     // try to detach the objects in case they have entered themselves
-    reCalculateVelocities();
+    reCalculateVelocities(i , j);
    }
   return dist <= minClosestDistance;   
 }
 
 void reCalculatePositions (){
-  if (checkCollision()){
-    cout << "updated velocities as collision was detected\n";
+  for (int i = 0; i < numObjects; i++){
+    for (int j = i + 1; j < numObjects; j++){
+      if(checkCollision(i , j)){
+      }
+    }
   }
   std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
   int timeDelta = std::chrono::duration_cast<std::chrono::nanoseconds> (currentTime - t).count();
-  t = currentTime;  
-  cx1 += ((vx1 * timeDelta) * (1e-9));
-  cy1 += ((vy1 * timeDelta) * (1e-9));
-  cx2 += ((vx2 * timeDelta) * (1e-9));
-  cy2 += ((vy2 * timeDelta) * (1e-9));
-  cout << "pos : (" << cx1 << " , " << cy1 << ") " << " ( " << cx2 << " , " << cy2 << ") \n";
-  cout << "vel : (" << vx1 << " , " << vy1 << ") " << " ( " << vx2 << " , " << vy2 << ") \n";
-  
+  if (delayedStart == true && timeDelta <= 2 * 1e9){
+    glutPostRedisplay();
+    return;
+  }
+  delayedStart = false;
+  t = currentTime;
+  for(int i = 0; i < numObjects ; i++){
+    cx[i] += ((vx[i] * timeDelta) * (1e-9));
+    cy[i] += ((vy[i] * timeDelta) * (1e-9));
+    
+    double fx = 0; double fy = 0;
+    for (int otherObject = 0; otherObject < numObjects ; otherObject++) if(otherObject != i){
+      double force = springForce(i , otherObject);
+      double distance = sqrt((cx[i] - cx[otherObject]) * (cx[i] - cx[otherObject]) + 
+                        (cy[i] - cy[otherObject])* (cy[i] - cy[otherObject]));
+      double directionX = (cx[otherObject] - cx[i]) / distance;
+      double directionY = (cy[otherObject] - cy[i]) / distance;
+      fx += directionX * force;
+      fy += directionY * force;
+    }
+    double ax = fx / masses[i] ; double ay = fy / masses[i];
+    vx[i] += ((ax * timeDelta) * (1e-9));
+    vy[i] += ((ay * timeDelta) * (1e-9));
+  }  
   glutPostRedisplay();
 }
 
 void drawCircle (double radius , double centreX , double centreY){
   double theta;
-  glColor3f(1, 0, 0);
+  glColor3f(cr, cg, cb);
   glBegin(GL_POLYGON);
   for (int i = 0; i < 360; i++){
     theta = 1.00 * i * PI / 180;
@@ -94,21 +137,57 @@ void drawCircle (double radius , double centreX , double centreY){
 }
 
 void display (){
+  
+  static std::chrono::steady_clock::time_point previousTime = std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
+  
+  int timeDelta = std::chrono::duration_cast<std::chrono::nanoseconds> (currentTime - previousTime).count();
+  
+  if (timeDelta <=  (20 * 1e6)){
+     return;
+  }
+  
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
   glOrtho(0.0f, WINDOW_HEIGHT, WINDOW_WIDTH, 0.0f, 0.0f, 1.0f);
   glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   glEnable (GL_DEPTH_TEST);
-  drawCircle(radius1 , cx1 , cy1);
-  drawCircle(radius2 , cx2 , cy2);
+  for (int i = 0; i < numObjects; i++){
+    drawCircle (radius[i] , cx[i] , cy[i]);
+  }
   glFlush();
   glutSwapBuffers();
+
+  previousTime = currentTime;
+}
+
+void drawObject (double centreX, double centreY , double velocityX, double velocityY){
+    for (int r = 10; r <= 50; r += 10){
+      for (int i = 0; i < 360; i += 5){
+          double theta = 1.00 * i * PI / 180;
+          double xc = centreX + r * cos(theta);
+          double yc = centreY + r * sin(theta);
+          double rs = 5;
+          cx.emplace_back(xc); cy.emplace_back(yc);
+          radius.emplace_back(rs);
+          vx.emplace_back (velocityX);
+          vy.emplace_back (velocityY);
+          masses.emplace_back(12);
+          numObjects++;
+      }
+    }
 }
 
 int main (int argc , char ** argv){
     glutInit (&argc , argv);
     glutInitDisplayMode (GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+    
+    numObjects = 0;
+    drawObject (200 , 200 , 40 , 0 );
+    drawObject (700 , 200  , -40 , 0);
 
+    cout << " number of objects are " << numObjects << endl;
+    
     glutInitWindowPosition (0 , 0);
     glutInitWindowSize (WINDOW_WIDTH , WINDOW_HEIGHT);
     glutCreateWindow ("SIMULATION");
