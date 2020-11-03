@@ -1,5 +1,6 @@
 #include <GL/glut.h>
 #include <bits/stdc++.h>
+#include <torch/torch.h>
 
 using namespace std;
 
@@ -51,12 +52,13 @@ void reCalculateVelocities(int i , int j){
 double springForce(int i , int j){
    // returns simple attractive forces between two particles
    double unDeformedSpringLen = 50;
-   double thresholdDistance = 1000;
+   double thresholdDistance = 20;
    double distance = sqrt((cx[i] - cx[j]) * (cx[i] - cx[j]) + (cy[i] - cy[j])* (cy[i] - cy[j]));
    if (distance >= thresholdDistance) return 0;
    else{
      if (distance == 0) return 0;
-     double f = 1.34 * 1e-2 * (distance - unDeformedSpringLen);
+     double par = (vx[i] * vx[i] + vy[i] * vy[i]);
+     double f = 1.34 * 1e-1  * (distance - unDeformedSpringLen) + 1.46*1e-3*par;
      return f;
    }
 }
@@ -102,6 +104,9 @@ void reCalculatePositions (){
   }
   delayedStart = false;
   t = currentTime;
+
+
+  
   for(int i = 0; i < numObjects ; i++){
     cx[i] += ((vx[i] * timeDelta) * (1e-9));
     cy[i] += ((vy[i] * timeDelta) * (1e-9));
@@ -183,8 +188,8 @@ int main (int argc , char ** argv){
     glutInitDisplayMode (GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
     
     numObjects = 0;
-    drawObject (200 , 200 , 40 , 0 );
-    drawObject (700 , 200  , -40 , 0);
+    drawObject (200 , 200 , 100 , 100 );
+    drawObject (700 , 200  , -100 , 100);
 
     cout << " number of objects are " << numObjects << endl;
     
