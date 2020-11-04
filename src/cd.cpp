@@ -7,7 +7,7 @@ using namespace std;
 #define WINDOW_WIDTH 1200
 #define PI acos(-1)
 #define EPSILON 0.1
-static GLint MAX_NUMBER_OF_OBJECTS = 616;
+static GLint MAX_NUMBER_OF_OBJECTS = 200;
 std::chrono::steady_clock::time_point t; // keeps track of the current time
 
 /*  data structures to store velocities , masses , locations of the particles */
@@ -24,13 +24,16 @@ torch::Tensor previousleftWallCollisionMatrix;
 torch::Tensor previousrightWallCollisionMatrix;
 torch::Tensor previoustopWallCollisionMatrix;
 torch::Tensor previousbottomWallCollisionMatrix;
+torch::Tensor haveCollided;
 torch::Tensor LIMIT;
+torch::Tensor forceMask;
 
 /* since these quantities don't change they are vectors*/
 
 bool delayedStart = false;
 static GLint numObjects = 0;
 GLint cr = 1, cg = 0, cb = 0;
+GLdouble radius = 5;
 
 void checkCollisionWithWalls(GLint i)
 {
@@ -55,7 +58,7 @@ void checkCollisionWithWalls(GLint i)
 void calculateAccelerations()
 {
   /* calculate the acceleration of the particles using spring force model */
-  const GLdouble unDeformedSpringLen = 10; /*the undeformed length of the spring in this model*/
+  const GLdouble unDeformedSpringLen = 0; /*the undeformed length of the spring in this model*/
   const GLdouble springForceRange = 200;    /*the range of the acting spring force*/
   const GLdouble springConstant = 1.34 * 1e-1 ; /* the constant K in the spring force expression */
   /* get the distances between the particles */
@@ -73,37 +76,71 @@ void calculateAccelerations()
   spring force */
   magnitudeOfForce = magnitudeOfForce * (distances <= springForceRange);
   torch::Tensor force = magnitudeOfForce * unitNormals;
+  force = force * forceMask;
 
   /* calculate the sum of all the forces acting on the particle due to the other particles */
   acceleration = torch::transpose(force.sum(2 , true) , 2 , 1) / mass;
   acceleration.nan_to_num_(0);
 }
+
+void display_frame()
+{
+  static int frame_count = 0; 
+  static long long time_track = 0;
+  double fps = 60.0;
+  static std::chrono::steady_clock::time_point prevTime;
+
+  std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
+  GLint timeDelta = std::chrono::duration_cast<std::chrono::nanoseconds>(currentTime - prevTime).count();
+
+  // if (delayedStart == true && timeDelta >= 2 * 1e9)
+  // {
+  //   glutPostRedisplay();
+  //   return;
+  // }
+
+  if (timeDelta > (1 / fps) * 1e9) 
+  {
+    glutPostRedisplay();
+    frame_count++;
+    time_track += timeDelta;
+    if (time_track > 5*1e9)
+    {
+      cout << 1e9 * frame_count / (time_track) << " FPS\n";
+      frame_count = 0;
+      time_track = 0;
+    } 
+    //delayedStart = false;
+    prevTime = currentTime;
+  }
+}
+
 void reCalculatePositions()
 {
   /* check the collision of the objects with the walls one by one*/
-  for (int i = 0; i < numObjects; i++){
-   checkCollisionWithWalls(i);
-  }
+  // for (int i = 0; i < numObjects; i++){
+  //  checkCollisionWithWalls(i);
+  // }
 
-  // torch::Tensor leftWallCollisionMatrix = ((centres[0] - radii) <= 0);
-  // torch::Tensor haveCollided = ((leftWallCollisionMatrix & ~previousleftWallCollisionMatrix));
-  // velocity[0] = velocity[0] * ~haveCollided + abs(velocity[0]) * haveCollided;
-  // previousleftWallCollisionMatrix = leftWallCollisionMatrix;
+  torch::Tensor leftWallCollisionMatrix = ((centres[0] - radii) <= 0);
+  haveCollided = ((leftWallCollisionMatrix & ~previousleftWallCollisionMatrix));
+  velocity[0] = velocity[0] * ~haveCollided + abs(velocity[0]) * haveCollided;
+  previousleftWallCollisionMatrix = leftWallCollisionMatrix;
 
-  // torch::Tensor rightWallCollisionMatrix = ((centres[0] + radii) >= WINDOW_WIDTH);
-  // haveCollided = ((rightWallCollisionMatrix & ~previousrightWallCollisionMatrix));
-  // velocity[0] = velocity[0] * ~haveCollided - abs(velocity[0]) * haveCollided;
-  // previousrightWallCollisionMatrix = rightWallCollisionMatrix;
+  torch::Tensor rightWallCollisionMatrix = ((centres[0] + radii) >= WINDOW_WIDTH);
+  haveCollided = ((rightWallCollisionMatrix & ~previousrightWallCollisionMatrix));
+  velocity[0] = velocity[0] * ~haveCollided - abs(velocity[0]) * haveCollided;
+  previousrightWallCollisionMatrix = rightWallCollisionMatrix;
 
-  // torch::Tensor topWallCollisionMatrix = ((centres[1] - radii) <= 0);
-  // haveCollided = ((topWallCollisionMatrix & ~previoustopWallCollisionMatrix));
-  // velocity[1] = velocity[1] * ~haveCollided + abs(velocity[1]) * haveCollided;
-  // previoustopWallCollisionMatrix = topWallCollisionMatrix;
+  torch::Tensor topWallCollisionMatrix = ((centres[1] - radii) <= 0);
+  haveCollided = ((topWallCollisionMatrix & ~previoustopWallCollisionMatrix));
+  velocity[1] = velocity[1] * ~haveCollided + abs(velocity[1]) * haveCollided;
+  previoustopWallCollisionMatrix = topWallCollisionMatrix;
 
-  // torch::Tensor bottomWallCollisionMatrix = ((centres[1] + radii) >= WINDOW_HEIGHT);
-  // haveCollided = ((bottomWallCollisionMatrix & ~previousbottomWallCollisionMatrix));
-  // velocity[1] = velocity[1] * ~haveCollided - abs(velocity[1]) * haveCollided;
-  // previousbottomWallCollisionMatrix = bottomWallCollisionMatrix;
+  torch::Tensor bottomWallCollisionMatrix = ((centres[1] + radii) >= WINDOW_HEIGHT);
+  haveCollided = ((bottomWallCollisionMatrix & ~previousbottomWallCollisionMatrix));
+  velocity[1] = velocity[1] * ~haveCollided - abs(velocity[1]) * haveCollided;
+  previousbottomWallCollisionMatrix = bottomWallCollisionMatrix;
 
   /* use tensors to check the collision between all the objects */
   torch::Tensor distances = centres - torch::transpose(centres, 2, 1);
@@ -131,7 +168,7 @@ void reCalculatePositions()
   torch::Tensor headingTowardsEachOther = (velocityOfSepartion < 0);
   /* collision is assumed to occur if the distance between particles is less than the 
   desired minimum and the particles are heading towards each other s*/
-  torch::Tensor haveCollided = (currentCollisionMatrix & headingTowardsEachOther);
+  haveCollided = (currentCollisionMatrix & headingTowardsEachOther);
 
   const GLdouble e = 0.3;
   torch::Tensor updater = ((1 + e) / 2) * (haveCollided * (((relativeVel * commonNormals).sum(0)) * (commonNormals)));
@@ -146,16 +183,9 @@ void reCalculatePositions()
   changeInVel = torch::min(changeInVel , LIMIT);
   changeInVel = torch::max(changeInVel , -LIMIT);
   velocity += changeInVel;
+
   std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
   GLint timeDelta = std::chrono::duration_cast<std::chrono::nanoseconds>(currentTime - t).count();
-  if (delayedStart == true && timeDelta <= 2 * 1e9)
-  {
-    glutPostRedisplay();
-    return;
-  }
-
-  delayedStart = false;
-  t = currentTime;
 
   /* updating the position and velocity tensor */
   calculateAccelerations();
@@ -164,7 +194,10 @@ void reCalculatePositions()
 
   centres = centres + velocity * (timeDelta * 1e-9);
   previousCollisionMatrix = currentCollisionMatrix;
-  glutPostRedisplay();
+
+  display_frame();
+  t = currentTime;
+
 }
 
 void drawCircle(GLdouble radius, GLdouble centreX, GLdouble centreY, GLint cred, GLint cblue, GLint cgreen)
@@ -184,45 +217,37 @@ void drawCircle(GLdouble radius, GLdouble centreX, GLdouble centreY, GLint cred,
 
 void display()
 {
-  static std::chrono::steady_clock::time_point previousTime = std::chrono::steady_clock::now();
-  std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
-
-  GLint timeDelta = std::chrono::duration_cast<std::chrono::nanoseconds>(currentTime - previousTime).count();
-
-  if (timeDelta <= (20 * 1e6))
-  {
-    return;
-  }
-
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
   glOrtho(0.0f, WINDOW_HEIGHT, WINDOW_WIDTH, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   glEnable(GL_DEPTH_TEST);
-  for (int i = 0; i < numObjects; i++)
+  for (int i = 0; i < numObjects/2; i++)
   {
-    drawCircle(radii[0][i].item<GLdouble>(), centres[0][0][i].item<GLdouble>(), centres[1][0][i].item<GLdouble>(), (i == 0 ? 1 : 0), (i == 0 ? 0 : 1), (i == 0 ? 0 : 0));
+    drawCircle(radii[0][i].item<GLdouble>(), centres[0][0][i].item<GLdouble>(), centres[1][0][i].item<GLdouble>(), 0, 1, 0);
+  }
+  for (int i = numObjects/2; i < numObjects; i++)
+  {
+    drawCircle(radii[0][i].item<GLdouble>(), centres[0][0][i].item<GLdouble>(), centres[1][0][i].item<GLdouble>(), 0, 0, 1);
   }
   glFlush();
   glutSwapBuffers();
-  previousTime = currentTime;
 }
 
 void drawObject(GLdouble centreX, GLdouble centreY, GLdouble velocityX, GLdouble velocityY, GLdouble rs)
 {
+  int drawn_objects = 0;
   /* All the different circles of the screen are drawn initially */
-  for (double r = rs; r <= 200; r += 2 * rs)
+  for (double r = rs; drawn_objects < MAX_NUMBER_OF_OBJECTS / 2; r += 2 * rs)
   {
     double delta = 4 * asin(rs / (2.00 * r)) * (180 / PI);
     for (double i = 0; i + delta <= 360; i += delta)
     {
       GLdouble theta = 1.00 * i * PI / 180;
       GLdouble xc = centreX + r * cos(theta), yc = centreY + r * sin(theta);
-      if (numObjects >= MAX_NUMBER_OF_OBJECTS)
+      if (drawn_objects >= MAX_NUMBER_OF_OBJECTS / 2)
       {
-        cout << "limit of number of objects is set to " << MAX_NUMBER_OF_OBJECTS << endl;
-        cout << "terminating program " << endl;
-        exit(1);
+        break;
       }
       centres[0][0][numObjects] = xc;
       centres[1][0][numObjects] = yc;
@@ -230,6 +255,7 @@ void drawObject(GLdouble centreX, GLdouble centreY, GLdouble velocityX, GLdouble
       velocity[0][0][numObjects] = velocityX;
       velocity[1][0][numObjects] = velocityY;
       numObjects++;
+      drawn_objects++;
     }
   }
 }
@@ -264,10 +290,21 @@ int main(int argc, char **argv)
   previousrightWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
   previoustopWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
   previousbottomWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
+  forceMask = torch::zeros({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions());
+  for(int i = 0; i < MAX_NUMBER_OF_OBJECTS; i++)
+  {
+    for(int j = 0; j < MAX_NUMBER_OF_OBJECTS; j++)
+    {
+      if ((i < MAX_NUMBER_OF_OBJECTS/2 && j < MAX_NUMBER_OF_OBJECTS/2) || (i >= MAX_NUMBER_OF_OBJECTS/2 && j >= MAX_NUMBER_OF_OBJECTS/2))
+        forceMask[i][j] = 1;
+      else
+        forceMask[i][j] = -1;
+    }
+  }
   
   /* draw the objects on to the screen and initialize matrices */
-  drawObject(1000, 500, -50, 0, 10);
-  drawObject(100, 500, 50, 0, 10);
+  drawObject(1000, 500, -100, 0, radius);
+  drawObject(100, 500, 100, 0, radius);
 
   cout << "number of particles " << endl;
   cout << numObjects << endl;
