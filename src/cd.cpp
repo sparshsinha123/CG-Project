@@ -1,13 +1,15 @@
 #include <GL/glut.h>
 #include <bits/stdc++.h>
 #include <torch/torch.h>
+#include <ATen/ATen.h>
+
 using namespace std;
 
 #define WINDOW_HEIGHT 1200
 #define WINDOW_WIDTH 1200
 #define PI acos(-1)
 #define EPSILON 0.1
-static GLint MAX_NUMBER_OF_OBJECTS = 200;
+static GLint MAX_NUMBER_OF_OBJECTS = 4000;
 std::chrono::steady_clock::time_point t; // keeps track of the current time
 
 /*  data structures to store velocities , masses , locations of the particles */
@@ -27,6 +29,9 @@ torch::Tensor previousbottomWallCollisionMatrix;
 torch::Tensor haveCollided;
 torch::Tensor LIMIT;
 torch::Tensor forceMask;
+torch::Tensor distances;
+torch::Tensor unitNormals;
+torch::Tensor commonNormals;
 
 /* since these quantities don't change they are vectors*/
 
@@ -62,12 +67,12 @@ void calculateAccelerations()
   const GLdouble springForceRange = 200;    /*the range of the acting spring force*/
   const GLdouble springConstant = 1.34 * 1e-1 ; /* the constant K in the spring force expression */
   /* get the distances between the particles */
-  torch::Tensor distances = centres - torch::transpose(centres, 2, 1);
-  distances = torch::sqrt((distances * distances).sum(0));
+  //torch::Tensor distances = centres - torch::transpose(centres, 2, 1);
+  //distances = torch::sqrt((distances * distances).sum(0));
   /* i - j th entries is the unit normal from the centre of the ith particle to the centre 
-  of the other particles */
-  torch::Tensor unitNormals = (-torch::transpose(centres, 2 , 1) + centres) / distances;
-  unitNormals.nan_to_num_(EPSILON * 1e-1);
+  of the other particles */ 
+  //torch::Tensor unitNormals = (-torch::transpose(centres, 2 , 1) + centres) / distances;
+  //unitNormals.nan_to_num_(EPSILON * 1e-1);
   /*formula for the spring force
     --> magnitude of the force : k * (distance - undeformed len)
   */
@@ -80,7 +85,7 @@ void calculateAccelerations()
 
   /* calculate the sum of all the forces acting on the particle due to the other particles */
   acceleration = torch::transpose(force.sum(2 , true) , 2 , 1) / mass;
-  acceleration.nan_to_num_(0);
+  //acceleration.nan_to_num_(0);
 }
 
 void display_frame()
@@ -143,18 +148,19 @@ void reCalculatePositions()
   previousbottomWallCollisionMatrix = bottomWallCollisionMatrix;
 
   /* use tensors to check the collision between all the objects */
-  torch::Tensor distances = centres - torch::transpose(centres, 2, 1);
+  distances = centres - torch::transpose(centres, 2, 1);
   distances = torch::sqrt((distances * distances).sum(0));
 
   torch::Tensor pairWiseMinDistance = torch::transpose(radii, 0, 1) + radii;
   torch::Tensor currentCollisionMatrix = ((distances - pairWiseMinDistance) <= EPSILON);
   /* apply the conservation laws upon collision */
   /* we know that the ditance between the particles is pairWiseMin for the case of collision */
-  torch::Tensor commonNormals = (-(torch::transpose(centres, 2, 1)) + centres);
-  commonNormals = (commonNormals) / distances;
-  commonNormals.nan_to_num_(0);
+  distances = max(distances, pairWiseMinDistance);
+  unitNormals = (-(torch::transpose(centres, 2, 1)) + centres);
+  unitNormals = (unitNormals) / distances;
+  //commonNormals.nan_to_num_(0);
 
-  commonNormals *= mask;
+  commonNormals = unitNormals * mask;
 
   /* get the relative velocities of the bodies . Note that the following tensor has two planes */
   torch::Tensor relativeVel = (-(torch::transpose(velocity, 2, 1)) + velocity);
@@ -173,10 +179,10 @@ void reCalculatePositions()
   const GLdouble e = 0.3;
   torch::Tensor updater = ((1 + e) / 2) * (haveCollided * (((relativeVel * commonNormals).sum(0)) * (commonNormals)));
   // the i,j th entry of the update contains information for updating the velocity of the particle i
-  updater = updater.nan_to_num(0);
+  //updater = updater.nan_to_num(0);
 
   torch::Tensor changeInVel = torch::transpose(updater.sum(2, 2), 1, 2);
-  changeInVel.nan_to_num_(0);
+  //changeInVel.nan_to_num_(0);
 
   /* to avoid strong impulses due to boundaries , dummy particles or overflows in numbers 
   or division by zeroes */
@@ -190,7 +196,7 @@ void reCalculatePositions()
   /* updating the position and velocity tensor */
   calculateAccelerations();
   velocity = velocity + acceleration * (timeDelta * 1e-9);
-  velocity.nan_to_num_(0);
+  //velocity.nan_to_num_(0);
 
   centres = centres + velocity * (timeDelta * 1e-9);
   previousCollisionMatrix = currentCollisionMatrix;
@@ -234,18 +240,18 @@ void display()
   glutSwapBuffers();
 }
 
-void drawObject(GLdouble centreX, GLdouble centreY, GLdouble velocityX, GLdouble velocityY, GLdouble rs)
+void drawObject(GLdouble centreX, GLdouble centreY, GLdouble velocityX, GLdouble velocityY, GLdouble rs, int start, int end)
 {
-  int drawn_objects = 0;
+  int drawn_objects = start;
   /* All the different circles of the screen are drawn initially */
-  for (double r = rs; drawn_objects < MAX_NUMBER_OF_OBJECTS / 2; r += 2 * rs)
+  for (double r = rs; drawn_objects <= end; r += 2 * rs)
   {
     double delta = 4 * asin(rs / (2.00 * r)) * (180 / PI);
     for (double i = 0; i + delta <= 360; i += delta)
     {
       GLdouble theta = 1.00 * i * PI / 180;
       GLdouble xc = centreX + r * cos(theta), yc = centreY + r * sin(theta);
-      if (drawn_objects >= MAX_NUMBER_OF_OBJECTS / 2)
+      if (drawn_objects > end)
       {
         break;
       }
@@ -276,21 +282,23 @@ void reshape(GLsizei width, GLsizei height)
 
 int main(int argc, char **argv)
 {
+  auto dev = torch::kCPU;
+
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
   /* initialize the tensors */
-  velocity = torch::zeros({2, 1, MAX_NUMBER_OF_OBJECTS});
-  centres = torch::zeros({2, 1, MAX_NUMBER_OF_OBJECTS});
-  radii = torch::ones({1, MAX_NUMBER_OF_OBJECTS});
-  acceleration = torch::zeros({2 , 1 , MAX_NUMBER_OF_OBJECTS});
-  LIMIT = torch::zeros({2 , 1 , MAX_NUMBER_OF_OBJECTS});
-  mask = torch::ones({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
-  previousCollisionMatrix = torch::zeros({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
-  previousleftWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
-  previousrightWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
-  previoustopWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
-  previousbottomWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
-  forceMask = torch::zeros({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions());
+  velocity = torch::zeros({2, 1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().device(dev, 0));
+  centres = torch::zeros({2, 1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().device(dev, 0));
+  radii = torch::ones({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().device(dev, 0));
+  acceleration = torch::zeros({2 , 1 , MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().device(dev, 0));
+  LIMIT = torch::zeros({2 , 1 , MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().device(dev, 0));
+  mask = torch::ones({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool).device(dev, 0));
+  previousCollisionMatrix = torch::zeros({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool).device(dev, 0));
+  previousleftWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool).device(dev, 0));
+  previousrightWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool).device(dev, 0));
+  previoustopWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool).device(dev, 0));
+  previousbottomWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool).device(dev, 0));
+  forceMask = torch::zeros({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().device(dev, 0));
   for(int i = 0; i < MAX_NUMBER_OF_OBJECTS; i++)
   {
     for(int j = 0; j < MAX_NUMBER_OF_OBJECTS; j++)
@@ -303,8 +311,8 @@ int main(int argc, char **argv)
   }
   
   /* draw the objects on to the screen and initialize matrices */
-  drawObject(1000, 500, -100, 0, radius);
-  drawObject(100, 500, 100, 0, radius);
+  drawObject(1000, 500, -100, 0, radius, 1, MAX_NUMBER_OF_OBJECTS / 2);
+  drawObject(100, 500, 100, 0, radius, MAX_NUMBER_OF_OBJECTS/2 + 1, MAX_NUMBER_OF_OBJECTS);
 
   cout << "number of particles " << endl;
   cout << numObjects << endl;
