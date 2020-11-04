@@ -3,29 +3,32 @@
 #include <torch/torch.h>
 using namespace std;
 
-#define WINDOW_HEIGHT 800
-#define WINDOW_WIDTH 800
+#define WINDOW_HEIGHT 1200
+#define WINDOW_WIDTH 1200
 #define PI acos(-1)
-
-const GLint MAX_NUMBER_OF_OBJECTS = 1000;
+#define EPSILON 0.1
+static GLint MAX_NUMBER_OF_OBJECTS = 616;
 std::chrono::steady_clock::time_point t; // keeps track of the current time
 
 /*  data structures to store velocities , masses , locations of the particles */
 
 /* creating a tensor for velocities */
+const GLdouble mass = 200;             /*mass of the particles -- assumed to be the same*/
 torch::Tensor velocity;                /* 2 x 1 x n tensor of velocity of objects */
 torch::Tensor centres;                 /* 2 x 1 x n tensor of centres of objects */
-torch::Tensor radii;                   /* radius of the tensors */
+torch::Tensor radii;                   /* radius of the particles */
+torch::Tensor acceleration;            /* acceleration of the particles */
 torch::Tensor mask;                    /* global null tensor */
 torch::Tensor previousCollisionMatrix; /* boolean matrix for checking collision*/
-torch::Tensor previousleftWallCollisionMatrix;
+torch::Tensor previousleftWallCollisionMatrix; 
 torch::Tensor previousrightWallCollisionMatrix;
 torch::Tensor previoustopWallCollisionMatrix;
 torch::Tensor previousbottomWallCollisionMatrix;
+torch::Tensor LIMIT;
 
 /* since these quantities don't change they are vectors*/
 
-bool delayedStart = true;
+bool delayedStart = false;
 static GLint numObjects = 0;
 GLint cr = 1, cg = 0, cb = 0;
 
@@ -39,53 +42,80 @@ void checkCollisionWithWalls(GLint i)
   GLdouble rad = radii[0][i].item<GLdouble>();
   // apply conditions for collision with all the walls and update the signs of the velocities
   // the collision is assumed to be elastic
-  if (centrex - rad <= 0)
+  if (centrex - rad <= EPSILON)
     velocity[0][0][i] = abs(velocity[0][0][i]);
-  if (centrex + rad >= WINDOW_WIDTH)
+  if (centrex + rad >= WINDOW_WIDTH - EPSILON)
     velocity[0][0][i] = -abs(velocity[0][0][i]);
-  if (centrey - rad <= 0)
+  if (centrey - rad <= EPSILON)
     velocity[1][0][i] = abs(velocity[1][0][i]);
-  if (centrey + rad >= WINDOW_HEIGHT)
+  if (centrey + rad >= WINDOW_HEIGHT - EPSILON)
     velocity[1][0][i] = -abs(velocity[1][0][i]);
+}
+
+void calculateAccelerations()
+{
+  /* calculate the acceleration of the particles using spring force model */
+  const GLdouble unDeformedSpringLen = 10; /*the undeformed length of the spring in this model*/
+  const GLdouble springForceRange = 200;    /*the range of the acting spring force*/
+  const GLdouble springConstant = 1.34 * 1e-1 ; /* the constant K in the spring force expression */
+  /* get the distances between the particles */
+  torch::Tensor distances = centres - torch::transpose(centres, 2, 1);
+  distances = torch::sqrt((distances * distances).sum(0));
+  /* i - j th entries is the unit normal from the centre of the ith particle to the centre 
+  of the other particles */
+  torch::Tensor unitNormals = (-torch::transpose(centres, 2 , 1) + centres) / distances;
+  unitNormals.nan_to_num_(EPSILON * 1e-1);
+  /*formula for the spring force
+    --> magnitude of the force : k * (distance - undeformed len)
+  */
+  torch::Tensor magnitudeOfForce = springConstant * (distances - unDeformedSpringLen);
+  /* apply the force only if the particles are at distances less than the range of the
+  spring force */
+  magnitudeOfForce = magnitudeOfForce * (distances <= springForceRange);
+  torch::Tensor force = magnitudeOfForce * unitNormals;
+
+  /* calculate the sum of all the forces acting on the particle due to the other particles */
+  acceleration = torch::transpose(force.sum(2 , true) , 2 , 1) / mass;
+  acceleration.nan_to_num_(0);
 }
 void reCalculatePositions()
 {
   /* check the collision of the objects with the walls one by one*/
-  // for (int i = 0; i < numObjects; i++){
-  //  checkCollisionWithWalls(i);
-  // }
+  for (int i = 0; i < numObjects; i++){
+   checkCollisionWithWalls(i);
+  }
 
-  torch::Tensor leftWallCollisionMatrix = ((centres[0] - radii) <= 0);
-  torch::Tensor haveCollided = ((leftWallCollisionMatrix & ~previousleftWallCollisionMatrix));
-  velocity[0] = velocity[0] * ~haveCollided + abs(velocity[0]) * haveCollided;
-  previousleftWallCollisionMatrix = leftWallCollisionMatrix;
+  // torch::Tensor leftWallCollisionMatrix = ((centres[0] - radii) <= 0);
+  // torch::Tensor haveCollided = ((leftWallCollisionMatrix & ~previousleftWallCollisionMatrix));
+  // velocity[0] = velocity[0] * ~haveCollided + abs(velocity[0]) * haveCollided;
+  // previousleftWallCollisionMatrix = leftWallCollisionMatrix;
 
-  torch::Tensor rightWallCollisionMatrix = ((centres[0] + radii) >= WINDOW_WIDTH);
-  haveCollided = ((rightWallCollisionMatrix & ~previousrightWallCollisionMatrix));
-  velocity[0] = velocity[0] * ~haveCollided - abs(velocity[0]) * haveCollided;
-  previousrightWallCollisionMatrix = rightWallCollisionMatrix;
+  // torch::Tensor rightWallCollisionMatrix = ((centres[0] + radii) >= WINDOW_WIDTH);
+  // haveCollided = ((rightWallCollisionMatrix & ~previousrightWallCollisionMatrix));
+  // velocity[0] = velocity[0] * ~haveCollided - abs(velocity[0]) * haveCollided;
+  // previousrightWallCollisionMatrix = rightWallCollisionMatrix;
 
-  torch::Tensor topWallCollisionMatrix = ((centres[1] - radii) <= 0);
-  haveCollided = ((topWallCollisionMatrix & ~previoustopWallCollisionMatrix));
-  velocity[1] = velocity[1] * ~haveCollided + abs(velocity[1]) * haveCollided;
-  previoustopWallCollisionMatrix = topWallCollisionMatrix;
+  // torch::Tensor topWallCollisionMatrix = ((centres[1] - radii) <= 0);
+  // haveCollided = ((topWallCollisionMatrix & ~previoustopWallCollisionMatrix));
+  // velocity[1] = velocity[1] * ~haveCollided + abs(velocity[1]) * haveCollided;
+  // previoustopWallCollisionMatrix = topWallCollisionMatrix;
 
-  torch::Tensor bottomWallCollisionMatrix = ((centres[1] + radii) >= WINDOW_HEIGHT);
-  haveCollided = ((bottomWallCollisionMatrix & ~previousbottomWallCollisionMatrix));
-  velocity[1] = velocity[1] * ~haveCollided - abs(velocity[1]) * haveCollided;
-  previousbottomWallCollisionMatrix = bottomWallCollisionMatrix;
+  // torch::Tensor bottomWallCollisionMatrix = ((centres[1] + radii) >= WINDOW_HEIGHT);
+  // haveCollided = ((bottomWallCollisionMatrix & ~previousbottomWallCollisionMatrix));
+  // velocity[1] = velocity[1] * ~haveCollided - abs(velocity[1]) * haveCollided;
+  // previousbottomWallCollisionMatrix = bottomWallCollisionMatrix;
 
   /* use tensors to check the collision between all the objects */
   torch::Tensor distances = centres - torch::transpose(centres, 2, 1);
   distances = torch::sqrt((distances * distances).sum(0));
 
   torch::Tensor pairWiseMinDistance = torch::transpose(radii, 0, 1) + radii;
-  torch::Tensor currentCollisionMatrix = ((distances - pairWiseMinDistance) <= 0);
-  haveCollided = ((currentCollisionMatrix & ~previousCollisionMatrix));
+  torch::Tensor currentCollisionMatrix = ((distances - pairWiseMinDistance) <= EPSILON);
   /* apply the conservation laws upon collision */
   /* we know that the ditance between the particles is pairWiseMin for the case of collision */
   torch::Tensor commonNormals = (-(torch::transpose(centres, 2, 1)) + centres);
-  commonNormals = (commonNormals) / pairWiseMinDistance;
+  commonNormals = (commonNormals) / distances;
+  commonNormals.nan_to_num_(0);
 
   commonNormals *= mask;
 
@@ -93,17 +123,29 @@ void reCalculatePositions()
   torch::Tensor relativeVel = (-(torch::transpose(velocity, 2, 1)) + velocity);
   /* make the final update to the velocity. The updates need to be made only when
   the collision has occured */
-  const GLdouble e = 0.0;
+
+  /* calculating have collided matrix carefully */
+  /*velocity of separation is the component of the relative velocity of the particle along
+  the common normal */
+  torch::Tensor velocityOfSepartion = ((relativeVel * commonNormals).sum(0));
+  torch::Tensor headingTowardsEachOther = (velocityOfSepartion < 0);
+  /* collision is assumed to occur if the distance between particles is less than the 
+  desired minimum and the particles are heading towards each other s*/
+  torch::Tensor haveCollided = (currentCollisionMatrix & headingTowardsEachOther);
+
+  const GLdouble e = 0.3;
   torch::Tensor updater = ((1 + e) / 2) * (haveCollided * (((relativeVel * commonNormals).sum(0)) * (commonNormals)));
   // the i,j th entry of the update contains information for updating the velocity of the particle i
   updater = updater.nan_to_num(0);
 
   torch::Tensor changeInVel = torch::transpose(updater.sum(2, 2), 1, 2);
+  changeInVel.nan_to_num_(0);
+
+  /* to avoid strong impulses due to boundaries , dummy particles or overflows in numbers 
+  or division by zeroes */
+  changeInVel = torch::min(changeInVel , LIMIT);
+  changeInVel = torch::max(changeInVel , -LIMIT);
   velocity += changeInVel;
-
-  cout << "magnitude of velocity of the first particle ";
-  cout << (torch::sqrt((velocity * velocity).sum(0)))[0][0] << endl;
-
   std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
   GLint timeDelta = std::chrono::duration_cast<std::chrono::nanoseconds>(currentTime - t).count();
   if (delayedStart == true && timeDelta <= 2 * 1e9)
@@ -116,6 +158,10 @@ void reCalculatePositions()
   t = currentTime;
 
   /* updating the position and velocity tensor */
+  calculateAccelerations();
+  velocity = velocity + acceleration * (timeDelta * 1e-9);
+  velocity.nan_to_num_(0);
+
   centres = centres + velocity * (timeDelta * 1e-9);
   previousCollisionMatrix = currentCollisionMatrix;
   glutPostRedisplay();
@@ -138,7 +184,6 @@ void drawCircle(GLdouble radius, GLdouble centreX, GLdouble centreY, GLint cred,
 
 void display()
 {
-
   static std::chrono::steady_clock::time_point previousTime = std::chrono::steady_clock::now();
   std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
 
@@ -166,9 +211,10 @@ void display()
 void drawObject(GLdouble centreX, GLdouble centreY, GLdouble velocityX, GLdouble velocityY, GLdouble rs)
 {
   /* All the different circles of the screen are drawn initially */
-  for (int r = 3; r <= 50; r += 15)
+  for (double r = rs; r <= 200; r += 2 * rs)
   {
-    for (int i = 0; i <= 360; i += 30)
+    double delta = 4 * asin(rs / (2.00 * r)) * (180 / PI);
+    for (double i = 0; i + delta <= 360; i += delta)
     {
       GLdouble theta = 1.00 * i * PI / 180;
       GLdouble xc = centreX + r * cos(theta), yc = centreY + r * sin(theta);
@@ -209,26 +255,33 @@ int main(int argc, char **argv)
   /* initialize the tensors */
   velocity = torch::zeros({2, 1, MAX_NUMBER_OF_OBJECTS});
   centres = torch::zeros({2, 1, MAX_NUMBER_OF_OBJECTS});
-  radii = torch::zeros({1, MAX_NUMBER_OF_OBJECTS});
+  radii = torch::ones({1, MAX_NUMBER_OF_OBJECTS});
+  acceleration = torch::zeros({2 , 1 , MAX_NUMBER_OF_OBJECTS});
+  LIMIT = torch::zeros({2 , 1 , MAX_NUMBER_OF_OBJECTS});
   mask = torch::ones({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
   previousCollisionMatrix = torch::zeros({MAX_NUMBER_OF_OBJECTS, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
   previousleftWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
   previousrightWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
-  ;
   previoustopWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
   previousbottomWallCollisionMatrix = torch::zeros({1, MAX_NUMBER_OF_OBJECTS}, torch::TensorOptions().dtype(torch::kBool));
+  
+  /* draw the objects on to the screen and initialize matrices */
+  drawObject(1000, 500, -50, 0, 10);
+  drawObject(100, 500, 50, 0, 10);
+
+  cout << "number of particles " << endl;
+  cout << numObjects << endl;
+
 
   for (int i = 0; i < MAX_NUMBER_OF_OBJECTS; i++)
   {
+    LIMIT[0][0][i] = LIMIT[1][0][i] = 55.5;
     for (int j = 0; j < MAX_NUMBER_OF_OBJECTS; j++)
     {
       if (i > j)
         mask[i][j] = -1;
     }
   }
-  /* draw the objects on to the screen and initialize matrices */
-  drawObject(200, 200, 50, 0, 5);
-  drawObject(700, 200, -50, 0, 5);
   glutInitWindowPosition(0, 0);
   glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
   glutCreateWindow("SIMULATION");
