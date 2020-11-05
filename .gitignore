@@ -32,6 +32,10 @@
 *.app
 cd
 
+
+#vscode files
+*.vscode
+
 #external libraries
 src/libtorch/
 References/
